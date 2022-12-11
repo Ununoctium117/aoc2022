@@ -36,10 +36,7 @@ impl FromStr for Instruction {
 }
 
 fn main() {
-    let lines = BufReader::new(File::open("input.txt").unwrap())
-        .lines()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let lines = BufReader::new(File::open("input.txt").unwrap()).lines();
 
     let mut cycle = 0;
     let mut x = 1;
@@ -47,7 +44,7 @@ fn main() {
     let mut crt = [['?'; 40]; 6];
 
     for line in lines {
-        let instruction: Instruction = line.parse().unwrap();
+        let instruction: Instruction = line.unwrap().parse().unwrap();
         let prev_cycle = cycle;
         let prev_x = x;
         instruction.execute(&mut cycle, &mut x);
