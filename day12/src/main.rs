@@ -74,7 +74,7 @@ impl HeightMap {
         }
     }
 
-    fn possible_moves(&self, x: usize, y: usize) -> Vec<(usize, usize)> {
+    fn possible_moves_from(&self, x: usize, y: usize) -> Vec<(usize, usize)> {
         let Some(cur_height) = self.val_at(x, y) else {
             return Vec::new();
         };
@@ -99,6 +99,40 @@ impl HeightMap {
         // right
         if self.traversable(cur_height, x.checked_add(1).unwrap_or(usize::MAX), y) {
             result.push((x + 1, y));
+        }
+
+        result
+    }
+
+    fn possible_moves_to(&self, x: usize, y: usize) -> Vec<(usize, usize)> {
+        let mut result = Vec::new();
+
+        // up
+        if let Some(src_height) = self.val_at(x, y.checked_add(1).unwrap_or(usize::MAX)) {
+            if self.traversable(src_height, x, y) {
+                result.push((x, y + 1));
+            }
+        }
+
+        // down
+        if let Some(src_height) = self.val_at(x, y.checked_sub(1).unwrap_or(usize::MAX)) {
+            if self.traversable(src_height, x, y) {
+                result.push((x, y - 1));
+            }
+        }
+
+        // left
+        if let Some(src_height) = self.val_at(x.checked_sub(1).unwrap_or(usize::MAX), y) {
+            if self.traversable(src_height, x, y) {
+                result.push((x - 1, y));
+            }
+        }
+
+        // right
+        if let Some(src_height) = self.val_at(x.checked_add(1).unwrap_or(usize::MAX), y) {
+            if self.traversable(src_height, x, y) {
+                result.push((x + 1, y));
+            }
         }
 
         result
@@ -130,7 +164,7 @@ impl Ord for Visit {
     }
 }
 
-fn len_of_shortest_path(start: (usize, usize), goal: (usize, usize), map: &HeightMap) -> usize {
+fn len_of_shortest_path(start: (usize, usize), goals: &[(usize, usize)], map: &HeightMap, backwards: bool) -> usize {
     let mut queue = BinaryHeap::new();
     let mut distances = HashMap::new();
     let mut visited = HashSet::new();
@@ -151,7 +185,13 @@ fn len_of_shortest_path(start: (usize, usize), goal: (usize, usize), map: &Heigh
             continue;
         }
 
-        for neighbor in map.possible_moves(pos.0, pos.1) {
+        let neighbors = if backwards {
+            map.possible_moves_to(pos.0, pos.1)
+        } else {
+            map.possible_moves_from(pos.0, pos.1)
+        };
+
+        for neighbor in neighbors {
             let new_distance = distance + 1;
             if distances.get(&neighbor).copied().unwrap_or(usize::MAX) > new_distance {
                 distances.insert(neighbor, new_distance);
@@ -171,20 +211,25 @@ fn len_of_shortest_path(start: (usize, usize), goal: (usize, usize), map: &Heigh
     //     println!("{}", row);
     // }
 
-    *distances.get(&goal).unwrap()
+    *goals
+        .iter()
+        .filter_map(|goal| distances.get(goal))
+        .min()
+        .unwrap()
 }
 
 fn main() {
     let input = std::fs::read_to_string("input.txt").unwrap();
 
     let (map, start, goal) = HeightMap::parse(&input);
-    println!("{}", len_of_shortest_path(start, goal, &map));
+    println!("{}", len_of_shortest_path(start, &[goal], &map, false));
 
     let possible_starts = map.lowest_points.clone();
-    let shortest_possible_climb = possible_starts
-        .into_iter()
-        .map(|point| len_of_shortest_path(point, goal, &map))
-        .min()
-        .unwrap();
+    let shortest_possible_climb = len_of_shortest_path(goal, &possible_starts[..], &map, true);
+    // let shortest_possible_climb = possible_starts
+    //     .into_iter()
+    //     .map(|point| len_of_shortest_path(point, goal, &map))
+    //     .min()
+    //     .unwrap();
     println!("{}", shortest_possible_climb);
 }
