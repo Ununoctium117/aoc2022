@@ -87,7 +87,7 @@ struct RangeGroup {
 impl RangeGroup {
     fn add_range(&mut self, min: i64, max: i64) {
         self.ranges.insert((min, max));
-        while self.simplify() {}
+        // while self.simplify() {}
     }
 
     fn contains(&self, test: i64) -> bool {
@@ -151,38 +151,6 @@ impl RangeGroup {
     }
 }
 
-#[cfg(test)]
-mod rg_test {
-    use crate::RangeGroup;
-
-    #[test]
-    fn test() {
-        let mut range_group = RangeGroup::default();
-
-        range_group.add_range(10, 20);
-        range_group.add_range(15, 25);
-        assert_eq!(range_group.ranges.len(), 1);
-        assert_eq!(range_group.ranges.pop_first().unwrap(), (10, 25));
-
-        range_group.add_range(10, 20); // 10-20
-        range_group.add_range(30, 40); // 10-20, 30-40
-        range_group.add_range(15, 25); // 10-25, 30-40
-        range_group.add_range(27, 45); // 10-25, 27-45
-        assert_eq!(range_group.ranges.len(), 2);
-        dbg!(&range_group);
-        range_group.add_range(22, 29); // 10-45
-        assert_eq!(range_group.ranges.len(), 1);
-        dbg!(&range_group);
-
-        assert!(range_group.contains(11));
-        assert!(range_group.contains(10));
-        assert!(range_group.contains(45));
-
-        assert!(!range_group.contains(9));
-        assert!(!range_group.contains(46));
-    }
-}
-
 struct Map {
     sensors: Vec<Sensor>,
 }
@@ -199,6 +167,7 @@ impl Map {
                 seen_xs.add_range(min, max);
             }
         }
+        while seen_xs.simplify() {}
 
         let mut beacon_xs = HashSet::new();
         for sensor in &self.sensors {
@@ -218,6 +187,7 @@ impl Map {
                 seen_xs.add_range(min, max);
             }
         }
+        while seen_xs.simplify() {}
 
         if seen_xs.range_count(min_x, max_x) > 1 {
             seen_xs.find_first_uncovered(min_x, max_x)
@@ -245,7 +215,7 @@ fn main() {
         if let Some(x) = map.get_hidden_beacon_x(y, 0, max_coord) {
             beacon_x = x;
             beacon_y = y;
-            println!("{}, {}", x, y);
+            println!("found tile: {}, {}", x, y);
             break;
         }
     }
