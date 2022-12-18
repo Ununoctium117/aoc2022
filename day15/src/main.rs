@@ -90,23 +90,29 @@ impl RangeGroup {
         // while self.simplify() {}
     }
 
-    fn contains(&self, test: i64) -> bool {
+    fn next_skip_ahead_point(&self, test: i64) -> Option<i64> {
         for (start, end) in &self.ranges {
             if test >= *start && test <= *end {
-                return true;
+                return Some(*end + 1);
             }
         }
-        false
+        None
     }
 
     fn find_first_uncovered(&self, min: i64, max: i64) -> Option<i64> {
         dbg!(self);
-        for test in min..=max {
-            if !self.contains(test) {
+        let mut test = min;
+        loop {
+            if test > max {
+                return None;
+            }
+
+            if let Some(next_point) = self.next_skip_ahead_point(test) {
+                test = next_point
+            } else {
                 return Some(test);
             }
         }
-        None
     }
 
     fn range_count(&self, min: i64, max: i64) -> usize {
@@ -171,7 +177,7 @@ impl Map {
 
         let mut beacon_xs = HashSet::new();
         for sensor in &self.sensors {
-            if sensor.beacon_y == y && seen_xs.contains(sensor.beacon_x) {
+            if sensor.beacon_y == y && seen_xs.next_skip_ahead_point(sensor.beacon_x).is_some() {
                 beacon_xs.insert(sensor.beacon_x);
             }
         }

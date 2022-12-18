@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     fmt::Debug,
     hash::Hash,
+    time::Instant,
 };
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -25,7 +26,7 @@ impl Debug for ValveId {
 
 const NULL_VALVE_ID: ValveId = ValveId(0xFFFF);
 
-fn build_valve_mask_mapping(mut valves: Vec<ValveId>) -> Box<[u64; ValveId::MAX]> {
+fn build_valve_mask_mapping(mut valves: Vec<ValveId>) -> Box<[i64; ValveId::MAX]> {
     let mut result = Box::new([0; ValveId::MAX]);
 
     valves.sort();
@@ -38,7 +39,7 @@ fn build_valve_mask_mapping(mut valves: Vec<ValveId>) -> Box<[u64; ValveId::MAX]
 
 #[derive(Debug, Clone)]
 struct Valve {
-    flow_rate: u64,
+    flow_rate: i64,
     adjacent_valves: Vec<ValveId>,
 }
 impl Valve {
@@ -71,8 +72,8 @@ impl Valve {
 }
 
 // Floyd-Warshall Algorithm
-fn all_pairs_shortest_paths(valves: &HashMap<ValveId, Valve>) -> Vec<[u64; ValveId::MAX]> {
-    let mut result = vec![[u64::MAX; ValveId::MAX]; ValveId::MAX];
+fn all_pairs_shortest_paths(valves: &HashMap<ValveId, Valve>) -> Vec<[i64; ValveId::MAX]> {
+    let mut result = vec![[i64::MAX; ValveId::MAX]; ValveId::MAX];
     let keys = valves.keys().copied().collect::<Vec<_>>();
 
     for v1 in &keys {
@@ -155,7 +156,7 @@ fn permutations<const SIZE: usize>(mut ids: [ValveId; SIZE], dest: &mut Vec<[Val
 enum AgentState {
     Travelling {
         destination: ValveId,
-        reactivates_on: u64, // started - path_len - 1 (time taken to open valve)
+        reactivates_on: i64, // started - path_len - 1 (time taken to open valve)
     },
     Active(ValveId),
 }
@@ -196,9 +197,9 @@ impl<const AGENTS: usize> AgentStates<AGENTS> {
     fn start_travelling(
         &mut self,
         agent_idx: usize,
-        current_time: u64,
+        current_time: i64,
         destination: ValveId,
-        path_length: u64,
+        path_length: i64,
     ) {
         self.agents[agent_idx] = AgentState::Travelling {
             destination,
@@ -209,10 +210,10 @@ impl<const AGENTS: usize> AgentStates<AGENTS> {
     // Returns (amount of time waited, amount of pressure released)
     fn wait_until_any_active(
         &mut self,
-        current_time_remaining: u64,
+        current_time_remaining: i64,
         valves: &HashMap<ValveId, Valve>,
         // history: &mut Vec<String>,
-    ) -> (u64, u64) {
+    ) -> (i64, i64) {
         let time_to_wait = self
             .agents
             .iter()
@@ -228,6 +229,11 @@ impl<const AGENTS: usize> AgentStates<AGENTS> {
 
         let new_time_remaining = current_time_remaining - time_to_wait;
 
+        // No agent can get to and open any new valve before time runs out
+        if new_time_remaining < 0 {
+            return (time_to_wait, 0);
+        }
+
         // Mark any agents that got there on that timestamp active
         let mut pressure_released = 0;
         for idx in 0..AGENTS {
@@ -236,7 +242,7 @@ impl<const AGENTS: usize> AgentStates<AGENTS> {
                 reactivates_on,
             } = self.agents[idx]
             {
-                if new_time_remaining.saturating_sub(reactivates_on) == 0 {
+                if new_time_remaining - reactivates_on <= 0 {
                     // history.push(format!(
                     //     "Agent {} opens {:?} with {} minutes left",
                     //     idx, destination, new_time_remaining
@@ -262,18 +268,18 @@ impl<const AGENTS: usize> Default for AgentStates<AGENTS> {
 
 #[derive(Debug)]
 struct VolcanoState<const AGENTS: usize> {
-    total_pressure_released: u64,
-    remaining_time: u64,
+    total_pressure_released: i64,
+    remaining_time: i64,
     agents: AgentStates<AGENTS>,
-    remaining_valuable_unqueued_closed_valves: u64,
+    remaining_valuable_unqueued_closed_valves: i64,
     // history: Vec<String>,
 }
 
 fn do_the_solve<const AGENTS: usize>(
     valves: &HashMap<ValveId, Valve>,
-    shortest_paths: &Vec<[u64; ValveId::MAX]>,
-    masks: &Box<[u64; ValveId::MAX]>,
-    time_allowed: u64,
+    shortest_paths: &Vec<[i64; ValveId::MAX]>,
+    masks: &Box<[i64; ValveId::MAX]>,
+    time_allowed: i64,
 ) {
     let mut queue = VecDeque::with_capacity(1_000);
     queue.push_back(VolcanoState::<AGENTS> {
@@ -300,6 +306,10 @@ fn do_the_solve<const AGENTS: usize>(
     // let mut history = Vec::new();
 
     while let Some(state) = queue.pop_back() {
+        if state.remaining_time <= 0 {
+            continue;
+        }
+
         if state.total_pressure_released > total_pressure_released {
             total_pressure_released = state.total_pressure_released;
             // history = state.history.clone();
@@ -308,8 +318,7 @@ fn do_the_solve<const AGENTS: usize>(
         let active_agents = state.agents.active_count();
 
         // Edge case: All valves are assigned, but some agents are still travelling to their assigned valve
-        if state.remaining_valuable_unqueued_closed_valves == 0
-            && state.agents.inactive_count() > 0
+        if state.remaining_valuable_unqueued_closed_valves == 0 && state.agents.inactive_count() > 0
         {
             let mut new_agent_states = state.agents.clone();
             // let mut new_history = state.history.clone();
@@ -354,18 +363,13 @@ fn do_the_solve<const AGENTS: usize>(
                         continue 'permutations;
                     }
 
-                    let path_len = shortest_paths[agent_cur_valve.0][dest_valve.0];
-
-                    // If any agent would take too long to reach their destination, try a different permutation instead.
-                    if path_len >= state.remaining_time {
-                        continue 'permutations;
-                    }
+                    let path_length = shortest_paths[agent_cur_valve.0][dest_valve.0];
 
                     new_agent_states.start_travelling(
                         agent_idx,
                         state.remaining_time,
                         *dest_valve,
-                        path_len,
+                        path_length,
                     );
 
                     new_closed_valves &= !masks[dest_valve.0];
@@ -378,7 +382,6 @@ fn do_the_solve<const AGENTS: usize>(
                     // &mut new_history,
                 );
                 let remaining_time = state.remaining_time - time_to_wait;
-
                 queue.push_back(VolcanoState {
                     total_pressure_released: state.total_pressure_released + pressure_released,
                     remaining_time,
@@ -396,7 +399,15 @@ fn do_the_solve<const AGENTS: usize>(
     println!("{}", total_pressure_released);
 }
 
+// fn find_best_path(valves: &HashMap<ValveId, Valve>, shortest_paths: &Vec<[i64; ValveId::MAX]>) {
+//     let all_valuable_nodes: Vec<_> = valves
+//         .iter()
+//         .filter_map(|(id, valve)| if valve.flow_rate > 0 { Some(id) } else { None })
+//         .collect();
+// }
+
 fn main() {
+    let start_loading = Instant::now();
     let input = std::fs::read_to_string("input.txt").unwrap();
     let valves: HashMap<_, _> = input.lines().map(|line| Valve::parse(line)).collect();
     let masks = build_valve_mask_mapping(valves.keys().copied().collect());
@@ -404,6 +415,17 @@ fn main() {
     let shortest_paths = all_pairs_shortest_paths(&valves);
     // dbg!(&shortest_paths);
 
+    let start_1 = Instant::now();
     do_the_solve::<1>(&valves, &shortest_paths, &masks, 30);
+    let start_2 = Instant::now();
     do_the_solve::<2>(&valves, &shortest_paths, &masks, 26);
+    let start_3 = Instant::now();
+    do_the_solve::<3>(&valves, &shortest_paths, &masks, 22);
+    let finish = Instant::now();
+
+    println!("\n");
+    println!("Loaded and pre-processed in {:?}", start_1 - start_loading);
+    println!("Part 1 solved in {:?}", start_2 - start_1);
+    println!("Part 2 solved in {:?}", start_3 - start_2);
+    println!("Part 3 solved in {:?}", finish - start_3);
 }
