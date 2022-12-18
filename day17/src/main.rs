@@ -1,23 +1,24 @@
-use std::{collections::VecDeque, fmt::Debug, time::Instant};
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt::Debug,
+};
 
 struct RepeatingIterator<T> {
     idx: usize,
     items: Vec<T>,
 }
 impl<T: Clone> Iterator for RepeatingIterator<T> {
-    type Item = T;
+    type Item = (T, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
         let result = self.items[self.idx].clone();
+        let idx = self.idx;
         self.idx = (self.idx + 1) % self.items.len();
-        Some(result)
+        Some((result, idx))
     }
 }
 
 mod rocks {
-    use crate::RepeatingIterator;
-
-    // 4x4 rock
     #[derive(Clone)]
     pub struct Rock {
         // each byte is a row; columns are bits 3210, in that order
@@ -61,8 +62,8 @@ mod rocks {
         height: 2,
     };
 
-    pub fn rock_iterator() -> impl Iterator<Item = Rock> {
-        RepeatingIterator {
+    pub fn rock_iterator() -> impl Iterator<Item = (Rock, usize)> {
+        crate::RepeatingIterator {
             idx: 0,
             items: vec![FLAT, CROSS, L, VERTICAL, SQUARE],
         }
@@ -97,9 +98,9 @@ impl<R> Debug for Board<R> {
         writeln!(f, "+-------+")
     }
 }
-impl<R: Iterator<Item = rocks::Rock>> Board<R> {
+impl<R: Iterator<Item = (rocks::Rock, usize)>> Board<R> {
     fn new(mut rock_iterator: R) -> Self {
-        let falling_rock = rock_iterator.next().unwrap();
+        let (falling_rock, _) = rock_iterator.next().unwrap();
         let spawn_col = 5 - falling_rock.width;
         Self {
             rows: VecDeque::with_capacity(500),
@@ -123,26 +124,24 @@ impl<R: Iterator<Item = rocks::Rock>> Board<R> {
         }
     }
 
-    fn apply_gravity(&mut self) -> bool {
+    fn apply_gravity(&mut self) -> Option<usize> {
         if self.falling_rock_row == 0 {
-            self.finalize_falling_rock();
-            true
+            Some(self.finalize_falling_rock())
         } else {
             if self.check_collision(
                 &self.falling_rock,
                 self.falling_rock_row - 1,
                 self.falling_rock_col,
             ) {
-                self.finalize_falling_rock();
-                true
+                Some(self.finalize_falling_rock())
             } else {
                 self.falling_rock_row -= 1;
-                false
+                None
             }
         }
     }
 
-    fn finalize_falling_rock(&mut self) {
+    fn finalize_falling_rock(&mut self) -> usize {
         self.rock_count += 1;
 
         if self.falling_rock_row + self.falling_rock.height >= self.rows.len() {
@@ -155,29 +154,40 @@ impl<R: Iterator<Item = rocks::Rock>> Board<R> {
             self.rows[self.falling_rock_row + rock_row] |= rock_mask;
         }
 
-        if self.rows.len() > 100_000 {
+        if self.rows.len() > 1_000 {
             self.trim_rows();
         }
 
-        self.falling_rock = self.rock_iterator.next().unwrap();
+        let (new_rock, idx) = self.rock_iterator.next().unwrap();
+        self.falling_rock = new_rock;
         self.falling_rock_row = self.rows.len() + 3;
         self.falling_rock_col = 5 - self.falling_rock.width;
+
+        idx
     }
 }
 impl<R> Board<R> {
+    fn height(&self) -> usize {
+        self.rows.len() + self.trimmed_rows
+    }
+
+    fn get_top_rows(&self) -> [u8; 32] {
+        let idx = self.rows.len();
+        let mut result = [0xFF; 32];
+        for i in 0..32 {
+            let Some(idx) = idx.checked_sub(1) else {
+                return result;
+            };
+            result[i] = self.rows[idx];
+        }
+        result
+    }
+
     // true if the rock is colliding with any marked positions
     fn check_collision(&self, rock: &rocks::Rock, row: usize, col: usize) -> bool {
         for rock_row in 0..rock.height {
             if let Some(board_row_val) = self.rows.get(row + rock_row) {
                 let mask = rock.get_mask(rock_row) << col;
-                // println!(
-                //     "{} {} {:08b} {:08b} {:08b}",
-                //     row,
-                //     col,
-                //     board_row_val,
-                //     rock.get_mask(rock_row),
-                //     mask
-                // );
                 if board_row_val & mask != 0 {
                     return true;
                 }
@@ -189,8 +199,6 @@ impl<R> Board<R> {
 
     fn trim_rows(&mut self) {
         let Some((idx, _)) = self.rows.iter().enumerate().rev().find(|(_, row)| **row == 0b0111_1111) else { return; };
-
-        // println!("trimming off {} rows", idx);
 
         // We can drop everything up until idx
         self.trimmed_rows += idx;
@@ -234,6 +242,20 @@ impl Gust {
     }
 }
 
+const P1_ROCKS: usize = 2022;
+const P2_ROCKS: usize = 1_000_000_000_000;
+
+// We're looking for two states where:
+// * the top 32 rows are identical (heuristic; not guaranteed but very likely)
+// * the rock index is the same
+// * the wind index is the same
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+struct CycleDetetionState {
+    last_rows: [u8; 32],
+    rock_idx: usize,
+    gust_idx: usize,
+}
+
 fn main() {
     let input = std::fs::read_to_string("input.txt").unwrap();
     let mut gust_iterator = RepeatingIterator {
@@ -246,25 +268,50 @@ fn main() {
 
     // println!("initial board state:\n{:?}", board);
 
-    let start = Instant::now();
+    let mut cycle_detection = HashMap::new();
+
+    let mut loops_simulated = 0;
     loop {
-        let gust = gust_iterator.next().unwrap();
+        let (gust, gust_idx) = gust_iterator.next().unwrap();
         board.move_rock(gust);
-        // println!("rock pushed {:?}:\n{:?}", gust, board);
 
-        board.apply_gravity();
-        // println!("rock falls:\n{:?}", board);
+        if let Some(rock_idx) = board.apply_gravity() {
+            let cycle_detection_state = CycleDetetionState {
+                last_rows: board.get_top_rows(),
+                rock_idx,
+                gust_idx,
+            };
 
-        if board.rock_count % 100_000_000 == 0 {
-            println!("simulated {} rocks in {:?}", board.rock_count, Instant::now() - start);
+            if let Some((rock_count_last_time, height_last_time)) = cycle_detection.insert(
+                cycle_detection_state.clone(),
+                (board.rock_count, board.height()),
+            ) {
+                println!("loop found! {loops_simulated}");
+                cycle_detection.clear();
+
+                if loops_simulated == 1 {
+                    let rocks_in_loop = board.rock_count - rock_count_last_time;
+                    let height_in_loop = board.height() - height_last_time;
+                    let repetitions_to_simulate = (P2_ROCKS - board.rock_count) / rocks_in_loop;
+
+                    println!("simulating repetitions: {repetitions_to_simulate}");
+
+                    board.rock_count += dbg!(rocks_in_loop * repetitions_to_simulate);
+                    board.trimmed_rows += dbg!(height_in_loop * repetitions_to_simulate);
+                } else {
+                    loops_simulated += 1;
+                    cycle_detection
+                        .insert(cycle_detection_state, (board.rock_count, board.height()));
+                }
+            }
         }
 
-        if board.rock_count == 2022 {
-            println!("{}", board.rows.len() + board.trimmed_rows);
+        if board.rock_count == P1_ROCKS {
+            println!("part 1 solution: {}", board.height());
         }
 
-        if board.rock_count == 1000000000000 {
-            println!("{}", board.rows.len() + board.trimmed_rows);
+        if board.rock_count == P2_ROCKS {
+            println!("part 2 solution: {}", board.height());
             return;
         }
     }
